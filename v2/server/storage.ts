@@ -23,22 +23,22 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   getUserById(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
-  
+
   // Categories
-  getCategories(): Promise<Category[]>;
+  getCategories(userId: string): Promise<Category[]>;
   getCategoryById(id: string): Promise<Category | undefined>;
   createCategory(category: InsertCategory): Promise<Category>;
   updateCategory(id: string, category: InsertCategory): Promise<Category | undefined>;
   deleteCategory(id: string): Promise<void>;
-  getCategoriesWithStats(): Promise<CategoryWithStats[]>;
+  getCategoriesWithStats(userId: string): Promise<CategoryWithStats[]>;
 
   // Emails
-  getEmails(filters?: { categoryId?: string; search?: string }): Promise<EmailWithClassification[]>;
+  getEmails(userId: string, filters?: { categoryId?: string; search?: string }): Promise<EmailWithClassification[]>;
   getEmailById(id: string): Promise<Email | undefined>;
   createEmail(email: InsertEmail): Promise<Email>;
   updateEmail(id: string, email: Partial<InsertEmail>): Promise<Email | undefined>;
   getEmailByGmailId(gmailId: string): Promise<Email | undefined>;
-  getEmailsWithEmbeddings(): Promise<Email[]>;
+  getEmailsWithEmbeddings(userId: string): Promise<Email[]>;
 
   // Classifications
   createClassification(classification: InsertClassification): Promise<Classification>;
@@ -46,7 +46,7 @@ export interface IStorage {
   updateClassification(emailId: string, classification: Partial<InsertClassification>): Promise<void>;
 
   // Stats
-  getStats(): Promise<{
+  getStats(userId: string): Promise<{
     totalEmails: number;
     categorizedEmails: number;
     totalCategories: number;
@@ -72,8 +72,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Categories
-  async getCategories(): Promise<Category[]> {
-    return await db.select().from(categories).orderBy(categories.name);
+  async getCategories(userId: string): Promise<Category[]> {
+    return await db.select().from(categories).where(eq(categories.userId, userId)).orderBy(categories.name);
   }
 
   async getCategoryById(id: string): Promise<Category | undefined> {
@@ -99,15 +99,17 @@ export class DatabaseStorage implements IStorage {
     await db.delete(categories).where(eq(categories.id, id));
   }
 
-  async getCategoriesWithStats(): Promise<CategoryWithStats[]> {
+  async getCategoriesWithStats(userId: string): Promise<CategoryWithStats[]> {
     const totalEmailsResult = await db
       .select({ count: sql<number>`count(*)` })
-      .from(emails);
+      .from(emails)
+      .where(eq(emails.userId, userId));
     const totalEmails = Number(totalEmailsResult[0]?.count || 0);
 
     const categoriesData = await db
       .select({
         id: categories.id,
+        userId: categories.userId,
         name: categories.name,
         description: categories.description,
         color: categories.color,
@@ -117,6 +119,7 @@ export class DatabaseStorage implements IStorage {
       })
       .from(categories)
       .leftJoin(classifications, eq(categories.id, classifications.categoryId))
+      .where(eq(categories.userId, userId))
       .groupBy(categories.id)
       .orderBy(categories.name);
 
@@ -128,7 +131,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Emails
-  async getEmails(filters?: { categoryId?: string; search?: string }): Promise<EmailWithClassification[]> {
+  async getEmails(userId: string, filters?: { categoryId?: string; search?: string }): Promise<EmailWithClassification[]> {
     let query = db
       .select({
         email: emails,
@@ -138,11 +141,12 @@ export class DatabaseStorage implements IStorage {
       .from(emails)
       .leftJoin(classifications, eq(emails.id, classifications.emailId))
       .leftJoin(categories, eq(classifications.categoryId, categories.id))
+      .where(eq(emails.userId, userId))
       .orderBy(desc(emails.receivedAt))
       .$dynamic();
 
     if (filters?.categoryId && filters.categoryId !== "all") {
-      query = query.where(eq(classifications.categoryId, filters.categoryId));
+      query = query.where(and(eq(emails.userId, userId), eq(classifications.categoryId, filters.categoryId)));
     }
 
     const results = await query;
@@ -180,11 +184,11 @@ export class DatabaseStorage implements IStorage {
     return email || undefined;
   }
 
-  async getEmailsWithEmbeddings(): Promise<Email[]> {
+  async getEmailsWithEmbeddings(userId: string): Promise<Email[]> {
     return await db
       .select()
       .from(emails)
-      .where(sql`${emails.embedding} IS NOT NULL`);
+      .where(and(eq(emails.userId, userId), sql`${emails.embedding} IS NOT NULL`));
   }
 
   // Classifications
@@ -212,7 +216,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Stats
-  async getStats(): Promise<{
+  async getStats(userId: string): Promise<{
     totalEmails: number;
     categorizedEmails: number;
     totalCategories: number;
@@ -220,19 +224,25 @@ export class DatabaseStorage implements IStorage {
   }> {
     const [emailCount] = await db
       .select({ count: sql<number>`count(*)` })
-      .from(emails);
+      .from(emails)
+      .where(eq(emails.userId, userId));
 
     const [categorizedCount] = await db
       .select({ count: sql<number>`count(distinct ${classifications.emailId})` })
-      .from(classifications);
+      .from(classifications)
+      .innerJoin(emails, eq(emails.id, classifications.emailId))
+      .where(eq(emails.userId, userId));
 
     const [categoryCount] = await db
       .select({ count: sql<number>`count(*)` })
-      .from(categories);
+      .from(categories)
+      .where(eq(categories.userId, userId));
 
     const [avgConfidence] = await db
       .select({ avg: sql<number>`avg(${classifications.confidence})` })
-      .from(classifications);
+      .from(classifications)
+      .innerJoin(emails, eq(emails.id, classifications.emailId))
+      .where(eq(emails.userId, userId));
 
     return {
       totalEmails: Number(emailCount?.count || 0),

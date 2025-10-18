@@ -103,9 +103,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Stats endpoint
-  app.get("/api/stats", async (req, res) => {
+  app.get("/api/stats", requireAuth, async (req, res) => {
     try {
-      const stats = await storage.getStats();
+      const stats = await storage.getStats(req.session.userId!);
       res.json(stats);
     } catch (error: any) {
       console.error("Error getting stats:", error);
@@ -114,9 +114,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Categories endpoints
-  app.get("/api/categories", async (req, res) => {
+  app.get("/api/categories", requireAuth, async (req, res) => {
     try {
-      const categories = await storage.getCategories();
+      const categories = await storage.getCategories(req.session.userId!);
       res.json(categories);
     } catch (error: any) {
       console.error("Error getting categories:", error);
@@ -124,9 +124,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/categories/stats", async (req, res) => {
+  app.get("/api/categories/stats", requireAuth, async (req, res) => {
     try {
-      const categories = await storage.getCategoriesWithStats();
+      const categories = await storage.getCategoriesWithStats(req.session.userId!);
       res.json(categories);
     } catch (error: any) {
       console.error("Error getting categories with stats:", error);
@@ -134,9 +134,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/categories", async (req, res) => {
+  app.post("/api/categories", requireAuth, async (req, res) => {
     try {
-      const validatedData = insertCategorySchema.parse(req.body);
+      const validatedData = insertCategorySchema.parse({ ...req.body, userId: req.session.userId });
       const category = await storage.createCategory(validatedData);
       res.status(201).json(category);
     } catch (error: any) {
@@ -149,9 +149,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/categories/:id", async (req, res) => {
+  app.patch("/api/categories/:id", requireAuth, async (req, res) => {
     try {
-      const validatedData = insertCategorySchema.parse(req.body);
+      const validatedData = insertCategorySchema.parse({ ...req.body, userId: req.session.userId });
       const category = await storage.updateCategory(req.params.id, validatedData);
       if (!category) {
         return res.status(404).json({ error: "Category not found" });
@@ -167,7 +167,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/categories/:id", async (req, res) => {
+  app.delete("/api/categories/:id", requireAuth, async (req, res) => {
     try {
       await storage.deleteCategory(req.params.id);
       res.status(204).send();
@@ -178,13 +178,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Emails endpoints
-  app.get("/api/emails", async (req, res) => {
+  app.get("/api/emails", requireAuth, async (req, res) => {
     try {
       const filters = {
         categoryId: req.query.category as string | undefined,
         search: req.query.search as string | undefined,
       };
-      const emails = await storage.getEmails(filters);
+      const emails = await storage.getEmails(req.session.userId!, filters);
       res.json(emails);
     } catch (error: any) {
       console.error("Error getting emails:", error);
@@ -193,7 +193,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Sync emails from Gmail (with rate limiting)
-  app.post("/api/emails/sync", async (req, res) => {
+  app.post("/api/emails/sync", requireAuth, async (req, res) => {
     try {
       const gmail = await getUncachableGmailClient();
       
@@ -258,25 +258,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // Create email in database
           const email = await storage.createEmail({
+            userId: req.session.userId!,
             gmailId: message.id,
             subject,
-            from,
-            to,
+            fromEmail: from,
+            toEmail: to,
             body,
             snippet: fullMessage.data.snippet || '',
             receivedAt: dateHeader ? new Date(dateHeader) : new Date(),
-            embedding,
+            embedding: JSON.stringify(embedding),
+            isArchived: false,
           });
 
           // Auto-classify if possible
-          const categorizedEmails = await storage.getEmailsWithEmbeddings();
+          const categorizedEmails = await storage.getEmailsWithEmbeddings(req.session.userId!);
           const emailsWithCategories = [];
           
           for (const catEmail of categorizedEmails) {
             const classification = await storage.getClassificationByEmailId(catEmail.id);
             if (classification && catEmail.embedding) {
               emailsWithCategories.push({
-                embedding: catEmail.embedding,
+                embedding: JSON.parse(catEmail.embedding),
                 categoryId: classification.categoryId,
               });
             }
@@ -289,7 +291,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 emailId: email.id,
                 categoryId: bestMatch.categoryId,
                 confidence: bestMatch.confidence,
-                isManual: 0,
+                isManual: false,
               });
             }
           }
@@ -316,7 +318,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Classify a specific email
-  app.post("/api/emails/:id/classify", async (req, res) => {
+  app.post("/api/emails/:id/classify", requireAuth, async (req, res) => {
     try {
       const { categoryId, isManual } = req.body;
       
@@ -337,7 +339,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await storage.updateClassification(email.id, {
           categoryId,
           confidence: isManual ? 1.0 : existingClassification.confidence,
-          isManual: isManual ? 1 : 0,
+          isManual: isManual ? true : false,
         });
       } else {
         // Create new
@@ -345,7 +347,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           emailId: email.id,
           categoryId,
           confidence: isManual ? 1.0 : 0.5,
-          isManual: isManual ? 1 : 0,
+          isManual: isManual ? true : false,
         });
       }
 
@@ -357,16 +359,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Recompute embeddings for all emails
-  app.post("/api/emails/compute-embeddings", async (req, res) => {
+  app.post("/api/emails/compute-embeddings", requireAuth, async (req, res) => {
     try {
-      const emails = await storage.getEmails();
+      const emails = await storage.getEmails(req.session.userId!);
       let processed = 0;
 
       for (const email of emails) {
         if (!email.embedding || email.embedding.length === 0) {
           const textForEmbedding = `${email.subject}\n\n${email.body || email.snippet}`.slice(0, 8000);
           const embedding = await generateEmbedding(textForEmbedding);
-          await storage.updateEmail(email.id, { embedding });
+          await storage.updateEmail(email.id, { embedding: JSON.stringify(embedding) });
           processed++;
         }
       }

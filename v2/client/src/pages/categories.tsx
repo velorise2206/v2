@@ -51,12 +51,13 @@ const iconOptions = [
 const colorOptions = [
   { value: "#ef4444", label: "Red" },
   { value: "#3b82f6", label: "Blue" },
-  { value: "#8b5cf6", label: "Purple" },
+  { value: "#0ea5e9", label: "Sky Blue" },
   { value: "#f97316", label: "Orange" },
   { value: "#22c55e", label: "Green" },
   { value: "#eab308", label: "Yellow" },
   { value: "#06b6d4", label: "Cyan" },
-  { value: "#ec4899", label: "Pink" },
+  { value: "#64748b", label: "Slate" },
+  { value: "#14b8a6", label: "Teal" },
 ];
 
 export default function Categories() {

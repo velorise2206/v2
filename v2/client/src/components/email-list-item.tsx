@@ -41,7 +41,7 @@ export function EmailListItem({ email, onClick }: EmailListItemProps) {
               )}
             </div>
             <p className="text-sm text-muted-foreground truncate">
-              {email.from}
+              {email.fromEmail}
             </p>
           </div>
           {email.classification && (
